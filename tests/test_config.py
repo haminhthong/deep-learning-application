@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from ppe_detection.config import DetectionConfig
 
 

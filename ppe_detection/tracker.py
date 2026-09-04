@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .models import PPEStatus, PersonDetection
+from .models import PersonDetection, PPEStatus
 
 
 def iou(box_a: list[float], box_b: list[float]) -> float:
@@ -95,10 +95,7 @@ class IoUTracker:
         if track_ids:
             # Tạo ma trận tỉ lệ IoU giữa các track hiện có và detections mới
             scores = np.array(
-                [
-                    [iou(self.tracks[tid].box, det.box) for det in detections]
-                    for tid in track_ids
-                ],
+                [[iou(self.tracks[tid].box, det.box) for det in detections] for tid in track_ids],
                 dtype=float,
             )
         else:

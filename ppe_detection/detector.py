@@ -17,7 +17,7 @@ import torch
 from ultralytics import YOLO
 
 from .config import DetectionConfig
-from .models import PPEDetection, PPEStatus, PersonDetection
+from .models import PersonDetection, PPEDetection, PPEStatus
 
 LOGGER = logging.getLogger(__name__)
 
@@ -113,12 +113,15 @@ class DualModelDetector:
         for box in results[0].boxes:
             raw_box = box.xyxy[0].cpu().tolist()
             x1, y1, x2, y2 = map(int, raw_box)
-            # Thêm lề (padding) 10px để mở rộng vùng nhận diện PPE
-            x1, y1 = max(0, x1 - 10), max(0, y1 - 10)
-            x2, y2 = min(width, x2 + 10), min(height, y2 + 10)
+            # Thêm lề (padding) cấu hình để mở rộng vùng nhận diện PPE
+            pad = self.config.person_roi_padding
+            x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+            x2, y2 = min(width, x2 + pad), min(height, y2 + pad)
 
             # Lọc theo vùng giám sát ROI nếu được thiết lập
-            if self.config.roi_polygon and not is_center_in_roi([x1, y1, x2, y2], self.config.roi_polygon):
+            if self.config.roi_polygon and not is_center_in_roi(
+                [x1, y1, x2, y2], self.config.roi_polygon
+            ):
                 continue
 
             roi = frame[y1:y2, x1:x2]
@@ -165,9 +168,8 @@ class DualModelDetector:
 
         return self._build_ppe_status(labels)
 
-    @staticmethod
-    def _build_ppe_status(labels: list[PPEDetection]) -> PPEStatus:
-        """Chuẩn hóa tên class nhận diện và phân tích logic vi phạm.
+    def _build_ppe_status(self, labels: list[PPEDetection]) -> PPEStatus:
+        """Chuẩn hóa tên class nhận diện và phân tích logic vi phạm dựa trên confidence & conflict_margin.
 
         Args:
             labels: Danh sách phát hiện PPE từ mô hình.
@@ -175,15 +177,39 @@ class DualModelDetector:
         Returns:
             Đối tượng `PPEStatus` đã tính toán cờ vi phạm mũ và áo.
         """
-        normalized = {
-            item.label.strip().lower().replace("_", "-").replace(" ", "-")
+        helmet_scores = [
+            item.confidence
             for item in labels
-        }
+            if item.label.strip().lower().replace("_", "-").replace(" ", "-") == "helmet"
+        ]
+        no_helmet_scores = [
+            item.confidence
+            for item in labels
+            if item.label.strip().lower().replace("_", "-").replace(" ", "-") == "no-helmet"
+        ]
+        vest_scores = [
+            item.confidence
+            for item in labels
+            if item.label.strip().lower().replace("_", "-").replace(" ", "-") == "vest"
+        ]
+        no_vest_scores = [
+            item.confidence
+            for item in labels
+            if item.label.strip().lower().replace("_", "-").replace(" ", "-") == "no-vest"
+        ]
 
-        # Logic vi phạm: Có nhãn khẳng định vi phạm (no-helmet/no-vest)
-        # và không đồng thời có nhãn tuân thủ (helmet/vest)
-        helmet_violated = "no-helmet" in normalized and "helmet" not in normalized
-        vest_violated = "no-vest" in normalized and "vest" not in normalized
+        h_score = max(helmet_scores, default=0.0)
+        nh_score = max(no_helmet_scores, default=0.0)
+        v_score = max(vest_scores, default=0.0)
+        nv_score = max(no_vest_scores, default=0.0)
+
+        # Vi phạm được xác nhận khi score vi phạm đạt threshold và vượt qua score tuân thủ + conflict_margin
+        helmet_violated = (nh_score >= self.config.ppe_confidence) and (
+            nh_score > h_score + self.config.conflict_margin
+        )
+        vest_violated = (nv_score >= self.config.ppe_confidence) and (
+            nv_score > v_score + self.config.conflict_margin
+        )
 
         return PPEStatus(
             detections=labels,
@@ -192,12 +218,13 @@ class DualModelDetector:
         )
 
 
-class MockDetector:
-    """Detector giả lập (Mock) cho chế độ `--demo` phục vụ trải nghiệm không cần weights ngoài."""
+class SyntheticDemoDetector:
+    """Detector mô phỏng pipeline giả lập (Synthetic Demo) phục vụ thử nghiệm khi chưa có weights ngoài."""
 
     def __init__(self, config: DetectionConfig) -> None:
         self.config = config
         self.frame_counter = 0
+        LOGGER.info(" Khởi chạy SyntheticDemoDetector (Chế độ mô phỏng pipeline - Zero-Setup).")
 
     def detect(self, frame: np.ndarray) -> list[PersonDetection]:
         """Tạo đối tượng mô phỏng với bounding box và vi phạm trên ảnh."""
@@ -243,4 +270,14 @@ class MockDetector:
         )
         detections.append(det_b)
 
+        if self.config.roi_polygon:
+            return [
+                detection
+                for detection in detections
+                if is_center_in_roi(detection.box, self.config.roi_polygon)
+            ]
         return detections
+
+
+# Alias tương thích ngược cho MockDetector
+MockDetector = SyntheticDemoDetector

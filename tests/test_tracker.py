@@ -2,7 +2,7 @@
 
 import pytest
 
-from ppe_detection.models import PPEStatus, PersonDetection
+from ppe_detection.models import PersonDetection, PPEStatus
 from ppe_detection.tracker import IoUTracker, iou
 
 

@@ -1,0 +1,21 @@
+# Configuration for YOLOv8n PPE Experiment
+experiment_name: yolov8n_ppe_v1
+model_type: yolov8n.pt
+seed: 42
+image_size: 640
+epochs: 100
+batch_size: 16
+optimizer: auto
+lr0: 0.01
+lrf: 0.01
+person_roi_padding: 10
+conflict_margin: 0.1
+
+data_config: training/data.yaml
+split_manifest: training/split_manifest.csv
+
+classes:
+  0: helmet
+  1: no-helmet
+  2: vest
+  3: no-vest

@@ -1,0 +1,6 @@
+file_path,source_video,camera_id,location_id,split,sha256
+images/frame_001.jpg,video_01.mp4,cam_01,site_a,train,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+images/frame_002.jpg,video_01.mp4,cam_01,site_a,train,f4c1c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b856
+images/frame_450.jpg,video_05.mp4,cam_02,site_a,val,a5d2c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b857
+images/frame_900.jpg,video_08.mp4,cam_03,site_b,test,b6e3c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b858
+images/frame_901.jpg,video_08.mp4,cam_03,site_b,test,c7f4c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b859

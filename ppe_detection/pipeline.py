@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .config import DetectionConfig
-from .detector import DetectorProtocol, DualModelDetector, MockDetector
+from .detector import DetectorProtocol, DualModelDetector, SyntheticDemoDetector
 from .reporting import SessionReport
 from .tracker import IoUTracker, Track
 from .visualization import draw_tracks
@@ -51,10 +51,11 @@ class PPEPipeline:
 
         # Chọn detector dựa trên chế độ demo hoặc dual model
         if config.demo_mode:
-            LOGGER.info("Đang chạy ở chế độ DEMO (Zero-Setup Mode).")
-            self.detector: DetectorProtocol = MockDetector(config)
+            LOGGER.info("Đang chạy ở chế độ mô phỏng SyntheticDemoDetector.")
+            self.detector: DetectorProtocol = SyntheticDemoDetector(config)
         else:
             self.detector = DualModelDetector(config)
+
 
         self.tracker = IoUTracker(config.tracker_iou, config.max_disappeared)
         self.confirmation_streaks: dict[tuple[int, str], int] = {}
@@ -76,9 +77,7 @@ class PPEPipeline:
             self._run_stream(source, report)
         return report
 
-    def _save_snapshot(
-        self, frame: np.ndarray, track: Track, kind: str, frame_id: int
-    ) -> str:
+    def _save_snapshot(self, frame: np.ndarray, track: Track, kind: str, frame_id: int) -> str:
         """Cắt và lưu ảnh snapshot của cá nhân vi phạm làm bằng chứng.
 
         Args:
@@ -90,7 +89,7 @@ class PPEPipeline:
         Returns:
             Chuỗi đường dẫn tới file ảnh snapshot đã lưu.
         """
-        if not self.config.save_snapshots:
+        if not (self.config.save_output and self.config.save_snapshots):
             return ""
 
         snapshot_dir = self.config.output_dir / "snapshots"
@@ -150,22 +149,15 @@ class PPEPipeline:
             ):
                 key = (track.track_id, kind)
                 if violated:
-                    self.confirmation_streaks[key] = (
-                        self.confirmation_streaks.get(key, 0) + 1
-                    )
+                    self.confirmation_streaks[key] = self.confirmation_streaks.get(key, 0) + 1
                 else:
                     self.confirmation_streaks[key] = 0
 
-                is_confirmed = (
-                    self.confirmation_streaks[key]
-                    >= self.config.violation_confirmations
-                )
+                is_confirmed = self.confirmation_streaks[key] >= self.config.violation_confirmations
 
                 if is_confirmed and key not in self.confirmed_violations:
                     self.confirmed_violations.add(key)
-                    snapshot_path = self._save_snapshot(
-                        frame, track, kind, frame_id
-                    )
+                    snapshot_path = self._save_snapshot(frame, track, kind, frame_id)
                     report.add_event(
                         track_id=track.track_id,
                         kind=kind,
@@ -173,6 +165,7 @@ class PPEPipeline:
                         fps=source_fps,
                         snapshot_path=snapshot_path,
                     )
+
                     LOGGER.warning(
                         "XÁC NHẬN VI PHẠM [%s] - Người ID: %d (Frame %d)",
                         kind.upper(),
@@ -208,6 +201,9 @@ class PPEPipeline:
                         fps=0.0,
                         snapshot_path=snapshot_path,
                     )
+
+        if report.events and self.config.enable_beep:
+            sound_alert()
 
         annotated = draw_tracks(
             frame,
@@ -253,24 +249,18 @@ class PPEPipeline:
                 frame_id = report.total_frames
 
                 # Chạy detection định kỳ theo interval để tối ưu FPS
-                is_detection_frame = (
-                    frame_id == 1 or frame_id % self.config.detection_interval == 0
-                )
+                is_detection_frame = frame_id == 1 or frame_id % self.config.detection_interval == 0
                 if is_detection_frame:
                     detections = self.detector.detect(frame)
                     tracks = self.tracker.update(detections)
-                    self._confirm_violations(
-                        frame, tracks, report, frame_id, source_fps
-                    )
+                    self._confirm_violations(frame, tracks, report, frame_id, source_fps)
                 else:
                     tracks = self.tracker.active_tracks()
 
                 now = time.perf_counter()
                 curr_fps = 1.0 / max(now - prev_time, 1e-6)
                 smoothed_fps = (
-                    curr_fps
-                    if smoothed_fps == 0.0
-                    else 0.9 * smoothed_fps + 0.1 * curr_fps
+                    curr_fps if smoothed_fps == 0.0 else 0.9 * smoothed_fps + 0.1 * curr_fps
                 )
                 prev_time = now
 
@@ -285,9 +275,7 @@ class PPEPipeline:
 
                 if self.config.save_output:
                     if writer is None:
-                        writer = self._create_video_writer(
-                            annotated, source_fps, output_stem
-                        )
+                        writer = self._create_video_writer(annotated, source_fps, output_stem)
                     writer.write(annotated)
 
                 if self.config.show_window:

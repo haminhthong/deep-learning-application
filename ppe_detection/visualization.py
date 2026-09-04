@@ -56,9 +56,7 @@ def draw_tracks(
     # 2. Vẽ thông tin từng đối tượng người
     for track in tracks:
         x1, y1, x2, y2 = map(int, track.box)
-        has_violation = (
-            track.ppe.helmet_violation or track.ppe.vest_violation
-        )
+        has_violation = track.ppe.helmet_violation or track.ppe.vest_violation
 
         # Màu đỏ nếu có vi phạm, Màu xanh lá nếu tuân thủ đầy đủ
         color = (0, 0, 255) if has_violation else (0, 200, 0)

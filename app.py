@@ -144,16 +144,17 @@ def main() -> None:
     configure_console()
     args = build_parser().parse_args()
 
-    # Kiểm tra tự động chuyển sang Demo mode nếu chưa có đường dẫn model
     is_demo = args.demo
     if not is_demo and (not args.person_model or not args.ppe_model):
-        LOGGER.warning(
-            "Chưa truyền --person-model hoặc --ppe-model. Tự động bật chế độ --demo (Zero-Setup)."
+        LOGGER.error(
+            " CHƯA TRUYỀN MÔ HÌNH: Thiếu --person-model hoặc --ppe-model.\n"
+            "   Để chạy chế độ mô phỏng pipeline thử nghiệm, vui lòng truyền cờ '--demo'.\n"
+            "   Hoặc truyền đường dẫn model thật: python app.py --person-model models/yolov8n.pt --ppe-model models/best.pt"
         )
-        is_demo = True
+        raise SystemExit(1)
 
     try:
-        from ppe_detection.pipeline import PPEPipeline
+        from ppe_detection.service import DetectionService
     except ModuleNotFoundError as error:
         if error.name in {"cv2", "torch", "ultralytics", "numpy"}:
             raise SystemExit(
@@ -182,8 +183,10 @@ def main() -> None:
     )
 
     try:
-        pipeline = PPEPipeline(config)
-        pipeline.run(parse_source(args.source))
+        service = DetectionService(config)
+        report, session_dir = service.process(parse_source(args.source))
+        if args.save:
+            LOGGER.info("Kết quả phiên làm việc được lưu tại: %s", session_dir)
     except (FileNotFoundError, ValueError, OSError) as error:
         LOGGER.error("Lỗi thực thi: %s", error)
         raise SystemExit(1) from None

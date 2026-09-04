@@ -84,7 +84,7 @@ class SessionReport:
             fps: Tốc độ khung hình (khung/giây).
             snapshot_path: Đường dẫn tới file ảnh snapshot bằng chứng.
         """
-        time_sec = round(frame_id / fps, 3) if fps > 0.0 else 0.0
+        time_sec = round((frame_id - 1) / fps, 3) if fps > 0.0 else 0.0
         iso_now = datetime.now().astimezone().isoformat(timespec="seconds")
 
         self.events.append(
@@ -122,9 +122,7 @@ class SessionReport:
             "events": [asdict(event) for event in self.events],
         }
 
-        json_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         with csv_path.open("w", encoding="utf-8-sig", newline="") as file:
             writer = csv.DictWriter(

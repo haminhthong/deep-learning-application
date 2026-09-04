@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from ppe_detection.config import DetectionConfig
-from ppe_detection.pipeline import PPEPipeline
+from ppe_detection.service import DetectionService
 
 # Cấu hình giao diện Streamlit
 st.set_page_config(
@@ -26,6 +26,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+MAX_UPLOAD_MB = 200
 
 
 def inject_custom_css() -> None:
@@ -44,15 +46,14 @@ def inject_custom_css() -> None:
             color: #64748B;
             margin-bottom: 1.5rem;
         }
-        .metric-card {
-            background-color: #F8FAFC;
-            border-radius: 10px;
-            padding: 15px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            border-left: 4px solid #3B82F6;
-        }
-        .metric-violation {
-            border-left-color: #EF4444 !important;
+        .demo-warning {
+            background-color: #FEF3C7;
+            border-left: 4px solid #F59E0B;
+            padding: 10px 15px;
+            border-radius: 6px;
+            color: #92400E;
+            font-weight: 500;
+            margin-bottom: 15px;
         }
         </style>
         """,
@@ -63,7 +64,10 @@ def inject_custom_css() -> None:
 def main() -> None:
     inject_custom_css()
 
-    st.markdown("<div class='main-header'>🛡️ Hệ Thống Giám Sát Trang Bị Bảo Hộ AI (PPE)</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='main-header'>🛡️ Hệ Thống Giám Sát Trang Bị Bảo Hộ AI (PPE)</div>",
+        unsafe_allow_html=True,
+    )
     st.markdown(
         "<div class='sub-header'>Ứng dụng Deep Learning YOLO & IoU Tracking phát hiện vi phạm mũ và áo bảo hộ thời gian thực</div>",
         unsafe_allow_html=True,
@@ -73,14 +77,22 @@ def main() -> None:
     st.sidebar.header("⚙️ Cấu hình Hệ thống")
 
     demo_mode = st.sidebar.checkbox(
-        "⚡ Chế độ Demo (Zero-Setup Mode)",
+        "⚡ Chế độ mô phỏng pipeline (Demo Simulation)",
         value=True,
-        help="Bật chế độ mô phỏng thử nghiệm mà không cần tải trước trọng số weights mô hình.",
+        help="Bật chế độ mô phỏng thử nghiệm SyntheticDemoDetector mà không cần tải trước trọng số mô hình.",
     )
+
+    if demo_mode:
+        st.markdown(
+            "<div class='demo-warning'>⚠️ <b>CHẾ ĐỘ MÔ PHỎNG PIPELINE ACTIVE</b>: Kết quả đang được tạo lập giả định bởi SyntheticDemoDetector, không phải suy luận AI thực tế từ trọng số model.</div>",
+            unsafe_allow_html=True,
+        )
 
     col_m1, col_m2 = st.sidebar.columns(2)
     with col_m1:
-        person_model_str = st.text_input("Model Person", value="models/yolov8n.pt", disabled=demo_mode)
+        person_model_str = st.text_input(
+            "Model Person", value="models/yolov8n.pt", disabled=demo_mode
+        )
     with col_m2:
         ppe_model_str = st.text_input("Model PPE", value="models/best.pt", disabled=demo_mode)
 
@@ -100,16 +112,19 @@ def main() -> None:
     )
 
     if uploaded_file is None:
-        st.info("💡 **Gợi ý**: Hãy tải lên một file ảnh hoặc video để trải nghiệm. Hoặc bật chế độ Demo ở thanh bên trái.")
+        st.info(
+            "💡 **Gợi ý**: Hãy tải lên một file ảnh hoặc video để trải nghiệm. Hoặc bật chế độ mô phỏng pipeline ở thanh bên trái."
+        )
         return
 
-    # Lưu tạm file upload để OpenCV đọc
-    suffix = Path(uploaded_file.name).suffix.lower()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-        tmp_file.write(uploaded_file.read())
-        tmp_path = tmp_file.name
+    # Kiểm tra kích thước file upload
+    if uploaded_file.size > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(
+            f"❌ File upload vượt quá giới hạn tối đa cho phép ({MAX_UPLOAD_MB} MB). Vui lòng chọn file nhỏ hơn."
+        )
+        return
 
-    # 3. Tiến hành Xử lý Dữ liệu
+    # 3. Tiến hành Xử lý Dữ liệu với dọn dẹp an toàn try...finally
     st.markdown("---")
     st.markdown("### 🎬 Kết quả Xử lý & Phân tích")
 
@@ -131,48 +146,82 @@ def main() -> None:
         enable_beep=False,
     )
 
-    with st.spinner("Đang thực thi nhận diện và theo dõi đối tượng..."):
-        try:
-            pipeline = PPEPipeline(config)
-            report = pipeline.run(tmp_path)
-        except Exception as err:
-            st.error(f"❌ Xảy ra lỗi trong quá trình xử lý: {err}")
-            return
+    tmp_path: Path | None = None
+    try:
+        suffix = Path(uploaded_file.name).suffix.lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(uploaded_file.getbuffer())
+            tmp_path = Path(tmp_file.name)
 
-    # 4. Hiển thị Thông số Thống kê Cards
-    counts = report.counts
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("👥 Tổng Số Người Được Theo Dõi", len(report.unique_track_ids))
-    col2.metric("⚠️ Số Người Vi Phạm", counts["people"])
-    col3.metric("🪖 Vi Phạm Mũ Bảo Hộ", counts["helmet"])
-    col4.metric("🦺 Vi Phạm Áo Phản Quang", counts["vest"])
+        # Kiểm tra tính khả đọc của OpenCV
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            test_img = cv2.imread(str(tmp_path))
+            if test_img is None:
+                st.error("❌ OpenCV không thể đọc file ảnh này. Vui lòng định dạng lại file.")
+                return
+        else:
+            cap = cv2.VideoCapture(str(tmp_path))
+            if not cap.isOpened():
+                cap.release()
+                st.error(
+                    "❌ OpenCV không thể mở file video này. Vui lòng kiểm tra codec hoặc chọn định dạng .mp4."
+                )
+                return
+            cap.release()
 
-    # 5. Hiển thị Kết quả Đầu ra (Ảnh hoặc Video kết quả)
-    st.markdown("#### 🖼️ Xem Trực Quan Đầu Ra")
-    if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
-        out_img_path = Path("outputs") / f"{Path(tmp_path).stem}_detected{suffix}"
-        if out_img_path.exists():
-            st.image(str(out_img_path), caption="Kết quả phát hiện PPE trên ảnh", use_container_width=True)
-    else:
-        out_vid_path = Path("outputs") / f"{Path(tmp_path).stem}_detected.mp4"
-        if out_vid_path.exists():
-            st.video(str(out_vid_path))
+        with st.spinner("Đang thực thi nhận diện và theo dõi đối tượng trong session..."):
+            service = DetectionService(config)
+            report, session_dir = service.process(str(tmp_path))
 
-    # 6. Bảng Chi Tiết Sự Kiện Vi Phạm
-    if report.events:
-        st.markdown("#### 📋 Danh Sách Sự Kiện Vi Phạm Chi Tiết")
-        df = pd.DataFrame([
-            {
-                "Track ID": e.track_id,
-                "Loại Vi Phạm": "Mũ bảo hộ (Helmet)" if e.violation_type == "helmet" else "Áo phản quang (Vest)",
-                "Frame": e.frame_id,
-                "Thời điểm (Giây)": e.time_seconds,
-                "Thời gian thực": e.detected_at,
-                "Ảnh Bằng Chứng": e.snapshot_path,
-            }
-            for e in report.events
-        ])
-        st.dataframe(df, use_container_width=True)
+        # 4. Hiển thị Thông số Thống kê Cards
+        counts = report.counts
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("👥 Tổng Số Người Được Theo Dõi", len(report.unique_track_ids))
+        col2.metric("⚠️ Số Người Vi Phạm", counts["people"])
+        col3.metric("🪖 Vi Phạm Mũ Bảo Hộ", counts["helmet"])
+        col4.metric("🦺 Vi Phạm Áo Phản Quang", counts["vest"])
+
+        # 5. Hiển thị Kết quả Đầu ra (Xem ảnh/video trong session_dir)
+        st.markdown("#### 🖼️ Xem Trực Quan Đầu Ra")
+        st.caption(f"📁 Thư mục lưu trữ kết quả phiên: `{session_dir}`")
+        if suffix in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+            out_img_path = session_dir / f"{tmp_path.stem}_detected{suffix}"
+            if out_img_path.exists():
+                st.image(
+                    str(out_img_path),
+                    caption="Kết quả phát hiện PPE trên ảnh",
+                    use_container_width=True,
+                )
+        else:
+            out_vid_path = session_dir / f"{tmp_path.stem}_detected.mp4"
+            if out_vid_path.exists():
+                st.video(str(out_vid_path))
+
+        # 6. Bảng Chi Tiết Sự Kiện Vi Phạm
+        if report.events:
+            st.markdown("#### 📋 Danh Sách Sự Kiện Vi Phạm Chi Tiết")
+            df = pd.DataFrame(
+                [
+                    {
+                        "Track ID": e.track_id,
+                        "Loại Vi Phạm": "Mũ bảo hộ (Helmet)"
+                        if e.violation_type == "helmet"
+                        else "Áo phản quang (Vest)",
+                        "Frame": e.frame_id,
+                        "Thời điểm (Giây)": e.time_seconds,
+                        "Thời gian thực": e.detected_at,
+                        "Ảnh Bằng Chứng": e.snapshot_path,
+                    }
+                    for e in report.events
+                ]
+            )
+            st.dataframe(df, use_container_width=True)
+
+    except (FileNotFoundError, OSError, ValueError) as err:
+        st.error(f"❌ Xảy ra lỗi trong quá trình xử lý: {err}")
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

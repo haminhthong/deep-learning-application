@@ -2,7 +2,14 @@
 __pycache__/
 *.py[cod]
 models/*.pt
+data/
 runs/
 outputs/
+*.onnx
+*.engine
+.pytest_cache/
+.ruff_cache/
+pytest_temp/
 .idea/
 .vscode/
+

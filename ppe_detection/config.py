@@ -30,9 +30,10 @@ class DetectionConfig:
         save_output: Lưu video/ảnh kết quả và file báo cáo ra đĩa.
         save_snapshots: Lưu ảnh cắt (ROI snapshot) của đối tượng khi vi phạm.
         output_dir: Thư mục gốc lưu trữ kết quả đầu ra.
-        snapshot_dir: Thư mục lưu trữ ảnh bằng chứng vi phạm.
         demo_mode: Bật chế độ chạy thử nghiệm (mô phỏng) không cần file trọng số ngoài.
         roi_polygon: Danh sách tọa độ đỉnh (x, y) tạo thành vùng nguy hiểm ROI.
+        person_roi_padding: Số pixel padding mở rộng khi cắt ROI người (mặc định 10).
+        conflict_margin: Ngưỡng chênh lệch độ tin cậy để giải quyết nhãn xung đột (mặc định 0.1).
     """
 
     person_model_path: Path | None = None
@@ -50,9 +51,10 @@ class DetectionConfig:
     save_output: bool = False
     save_snapshots: bool = True
     output_dir: Path = Path("outputs")
-    snapshot_dir: Path = Path("outputs/snapshots")
     demo_mode: bool = False
     roi_polygon: list[tuple[int, int]] | None = None
+    person_roi_padding: int = 10
+    conflict_margin: float = 0.1
 
     def validate(self) -> None:
         """Kiểm tra tính hợp lệ của đường dẫn và miền giá trị tham số.
@@ -77,11 +79,15 @@ class DetectionConfig:
         if self.violation_confirmations <= 0:
             raise ValueError("violation_confirmations phải lớn hơn 0.")
 
+        if self.person_roi_padding < 0:
+            raise ValueError("person_roi_padding không được là số âm.")
+
         for name, value in (
             ("person_confidence", self.person_confidence),
             ("ppe_confidence", self.ppe_confidence),
             ("nms_iou", self.nms_iou),
             ("tracker_iou", self.tracker_iou),
+            ("conflict_margin", self.conflict_margin),
         ):
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} phải nằm trong khoảng từ 0.0 đến 1.0.")
