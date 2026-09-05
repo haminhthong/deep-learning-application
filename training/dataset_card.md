@@ -1,50 +1,60 @@
 # Dataset Card: Construction PPE Detection Dataset
 
-## 1. Dữ Liệu Tổng Quan
-- **Nguồn dữ liệu (Source)**: Dữ liệu ảnh/video được thu thập từ camera giám sát công trường xây dựng công nghiệp thực tế và tập dữ liệu PPE cộng đồng.
-- **Bản quyền / License**: CC BY 4.0 / Educational & Research Use Only.
+## 1. Dữ Liệu Tổng Quan (Dataset Summary)
+- **Nguồn dữ liệu (Source)**: Dữ liệu hình ảnh và video giám sát thu thập từ camera an ninh công trường xây dựng công nghiệp thực tế và dữ liệu benchmark PPE cộng đồng.
+- **Bản quyền / License**: CC BY 4.0 / Educational & Research Portfolio Use.
 - **Tổng số lượng**:
-  - Số hình ảnh / Person Crops: 5,200 mẫu.
-  - Số video clip giám sát: 14 phiên quay (Recording Sessions).
-- **Độ phân giải**: $1920 \times 1080$ và $1280 \times 720$ pixels.
-- **Điều kiện ánh sáng**: Ban ngày (70%), Ánh sáng đèn công nghiệp (20%), Thiếu sáng/hoàng hôn (10%).
+  - Số hình ảnh / Person Crops: **5,200 mẫu**.
+  - Số phiên ghi hình: **14 recording sessions** độc lập.
+- **Độ phân giải nguồn**: $1920 \times 1080$ (Full HD) và $1280 \times 720$ (HD 720p).
+- **Phân bố bối cảnh**: Ban ngày tự nhiên (70%), Ánh sáng nhân tạo / nhà xưởng (20%), Thiếu sáng / hoàng hôn (10%).
 
 ---
 
 ## 2. Thống Kê Phân Phối Lớp (Class Statistics)
 
+Dữ liệu được kiểm toán tự động bởi [`audit_dataset.py`](./audit_dataset.py) và kết xuất vào [`dataset_report.json`](./dataset_report.json):
+
 | Class ID | Class Name | Train Set | Validation Set | Test Set | Total Instances |
 | :---: | :--- | :---: | :---: | :---: | :---: |
 | 0 | `helmet` | 3,240 | 690 | 710 | 4,640 |
-| 1 | `no-helmet` | 1,150 | 240 | 260 | 1,650 |
-| 2 | `vest` | 2,890 | 610 | 640 | 4,140 |
-| 3 | `no-vest` | 980 | 210 | 230 | 1,420 |
+| 1 | `no-helmet` | 400 | 90 | 70 | 560 |
+| 2 | `vest` | 2,878 | 620 | 622 | 4,120 |
+| 3 | `no-vest` | 762 | 160 | 158 | 1,080 |
 
 > [!NOTE]
-> Bảng thống kê trên phản ánh số lượng đối tượng thực tế theo chiến lược phân chia chống rò rỉ dữ liệu (Group Splitting).
+> Thống kê trên phản ánh chính xác số lượng nhãn bounding box sau kiểm toán. Mỗi mẫu Person Crop có thể chứa đồng thời cả nhãn vùng đầu (helmet / no-helmet) và nhãn vùng thân (vest / no-vest).
 
 ---
 
-## 3. Quy Tắc Gán Nhãn & Tiền Xử Lý (Annotation & Preprocessing Rules)
+## 3. Định Nghĩa & Quy Tắc Gán Nhãn (Annotation Semantics)
 
-- **Công cụ gán nhãn**: LabelImg / CVAT.
-- **Định dạng nhãn**: YOLO Format (`class_id center_x center_y width height`).
-- **Quy tắc Crop Person ROI**:
-  - Ảnh cropped person được cắt từ kết quả YOLO Person Detector.
-  - Áp dụng **Padding cố định 10px** (`person_roi_padding = 10`) đồng bộ hoàn toàn với pipeline inference.
-  - Tỷ lệ khung hình được duy trì qua kỹ thuật **Letterbox Resize** ($640 \times 640$).
-- **Xử lý nhãn mơ hồ (Ambiguous Labels)**:
-  - Nếu đối tượng bị che khuất $> 70\%$, nhãn sẽ bỏ qua không đưa vào tập huấn luyện.
-  - Mũ không đúng chuẩn an toàn lao động (mũ lưỡi trai, nón lá) không được gán nhãn `helmet`.
+Để tránh mơ hồ nhãn khi huấn luyện mô hình Stage-2 trên vùng ảnh cắt (Person ROI), taxonomy nhãn được chuẩn hóa nghiêm ngặt theo phân vùng cơ thể (Body-Zone Semantics):
+
+- **`helmet`**: Bounding box bao quanh chính xác chiếc mũ bảo hộ lao động (hardhat/helmet) nằm trên vùng đầu (`y <= 35%` chiều cao người). Mũ bảo hiểm xe máy hoặc mũ vải thông thường không được coi là mũ bảo hộ.
+- **`no-helmet`**: Bounding box bao quanh vùng đầu / tóc trần không đội mũ bảo hộ (`y <= 35%` chiều cao người).
+- **`vest`**: Bounding box bao quanh áo bảo hộ phản quang (high-visibility safety vest) nằm trên thân người (`30% <= y <= 75%` chiều cao người).
+- **`no-vest`**: Bounding box bao quanh vùng thân trên (torso) mặc quần áo dân dụng hoặc đồng phục không có dải phản quang an toàn.
 
 ---
 
-## 4. Chiến Lược Chia Tập Dữ Liệu (Split Strategy & Anti-Leakage)
+## 4. Hợp Đồng Tiền Xử Lý (Crop Strategy Contract)
 
-Đảm bảo **KHÔNG rò rỉ dữ liệu** (Data Leakage) bằng cách phân chia theo nhóm (Group Splitting):
+- **Person Detection & Padding**:
+  - Từng cá nhân được phát hiện bởi mô hình Person Detector (COCO Class 0).
+  - Vùng cắt (ROI) được mở rộng thêm **padding cố định 10px** (`person_roi_padding = 10`) để tránh cắt cụt mũ hoặc mép áo.
+  - Vùng ảnh ROI được đưa về kích thước chuẩn $640 \times 640$ thông qua kỹ thuật **Letterbox Resize** (giữ nguyên tỷ lệ khung hình, bù đắp viền xám).
+
+---
+
+## 5. Chiến Lược Phân Chia Chống Rò Rỉ (Group-Aware Anti-Leakage Split)
+
+Để ngăn chặn rò rỉ dữ liệu (Data Leakage) nghiêm trọng giữa các khung hình liên tiếp của cùng một video:
 - **Group Key**: `camera_id + location_id + recording_session`.
-- Tất cả các khung hình thuộc cùng 01 phiên quay (recording session) được xếp **hoàn toàn** vào 1 trong 3 tập (Train: 70%, Val: 15%, Test: 15%).
-- Tập Test chứa ít nhất 02 camera độc lập chưa bao giờ xuất hiện trong tập Train.
-- Khử ảnh trùng lặp hoặc gần giống nhau thông qua SHA-256 hash và Perceptual Hashing (pHash).
+- **Nguyên tắc bất biến**: Toàn bộ các khung hình thuộc cùng một phiên ghi hình (`recording_session`) chỉ được nằm trọn vẹn trong **DUY NHẤT 01 tập** (Train: 70%, Val: 15%, Test: 15%).
+- **Hai giao thức kiểm thử độc lập**:
+  - **Test A (Unseen Sessions)**: Đánh giá khả năng khái quát hóa theo thời gian và phiên làm việc khác nhau.
+  - **Test B (Unseen Cameras)**: Tập Test chứa 02 góc camera độc lập (`cam_04`, `cam_05` tại `site_c`) hoàn toàn **chưa từng xuất hiện trong tập Train**, giúp đánh giá hiện tượng trôi miền dữ liệu (Domain Shift).
+- **Khử trùng lặp**: Xác thực mã băm nội dung SHA-256 và Perceptual Hash (pHash) đảm bảo không có khung hình tương đồng cắt chéo tập.
 
-Danh sách phân chia chi tiết được quản lý tại file [`split_manifest.csv`](file:///d:/hoc/can%20lam/U%CC%9B%CC%81ng%20du%CC%A3ng%20mo%CC%82%20hi%CC%80nh%20Deep%20Learning%20YOLO%20%C4%91e%CC%82%CC%89%20pha%CC%81t%20hie%CC%A3%CC%82n%20%C4%91o%CC%82%CC%81i%20tu%CC%9Bo%CC%9B%CC%A3ng%20trong%20a%CC%89nh%20v%C3%A0%20video/deep-learning-application/training/split_manifest.csv).
+Toàn bộ siêu dữ liệu 5,200 mẫu được theo dõi tại file [`split_manifest.csv`](./split_manifest.csv).

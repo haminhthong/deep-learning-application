@@ -1,7 +1,12 @@
-"""Module điều phối quy trình xử lý chính (PPE Pipeline).
+"""Module điều phối quy trình xử lý chính (PPE Pipeline - Track-First Architecture).
 
-Kết nối các thành phần: Detector, Tracker, Reporter, Visualizer và Sound Alert
-để xử lý các nguồn đầu vào từ Ảnh tĩnh, Video file hoặc Luồng Webcam trực tiếp.
+Kết nối các thành phần theo chuẩn kiến trúc Online Canonical:
+1. Frame → Person Detector
+2. Multi-Object Tracking (ByteTrack / IoU Tracker kèm Motion Prediction)
+3. Trích xuất Person Track ROIs
+4. PPE Detector kèm Spatial Body-Zone Association
+5. Temporal Violation FSM (Finite State Machine: COMPLIANT → VIOLATING → ALERTED → RESOLVED → VIOLATING)
+6. Snapshot bằng chứng, cảnh báo âm thanh và xuất báo cáo đa định dạng JSON/CSV.
 """
 
 from __future__ import annotations
@@ -16,8 +21,10 @@ import numpy as np
 
 from .config import DetectionConfig
 from .detector import DetectorProtocol, DualModelDetector, SyntheticDemoDetector
+from .models import PersonDetection
 from .reporting import SessionReport
-from .tracker import IoUTracker, Track
+from .tracker import ByteTrack, IoUTracker, Track, TrackerProtocol
+from .violation_fsm import TemporalViolationFSM
 from .visualization import draw_tracks
 
 LOGGER = logging.getLogger(__name__)
@@ -38,38 +45,40 @@ def sound_alert() -> None:
 
 
 class PPEPipeline:
-    """Điều phối toàn bộ quy trình nhận diện, theo dõi, xác nhận vi phạm và lưu báo cáo."""
+    """Điều phối toàn bộ quy trình nhận diện, theo dõi Track-First và máy trạng thái thời gian."""
 
     def __init__(self, config: DetectionConfig) -> None:
-        """Khởi tạo pipeline với cấu hình `DetectionConfig`.
-
-        Args:
-            config: Cấu hình hệ thống.
-        """
+        """Khởi tạo pipeline với cấu hình `DetectionConfig`."""
         config.validate()
         self.config = config
 
-        # Chọn detector dựa trên chế độ demo hoặc dual model
         if config.demo_mode:
             LOGGER.info("Đang chạy ở chế độ mô phỏng SyntheticDemoDetector.")
             self.detector: DetectorProtocol = SyntheticDemoDetector(config)
         else:
             self.detector = DualModelDetector(config)
 
+        # Khởi tạo tracker theo cấu hình
+        if config.tracker_type.lower() == "bytetrack":
+            self.tracker: TrackerProtocol = ByteTrack(
+                high_threshold=max(0.4, config.person_confidence),
+                match_threshold=config.tracker_iou,
+                max_missed_detections=config.max_missed_detections,
+            )
+        else:
+            self.tracker = IoUTracker(
+                threshold=config.tracker_iou,
+                max_disappeared=config.max_missed_detections,
+            )
 
-        self.tracker = IoUTracker(config.tracker_iou, config.max_disappeared)
-        self.confirmation_streaks: dict[tuple[int, str], int] = {}
-        self.confirmed_violations: set[tuple[int, str]] = set()
+        # Máy trạng thái hữu hạn kiểm soát vi phạm theo thời gian
+        self.fsm = TemporalViolationFSM(
+            confirm_observations=config.violation_confirmations,
+            resolve_observations=config.resolution_confirmations,
+        )
 
     def run(self, source: int | str) -> SessionReport:
-        """Thực thi luồng xử lý tương ứng với loại nguồn đầu vào.
-
-        Args:
-            source: Chỉ số camera (ví dụ 0) hoặc đường dẫn file ảnh/video.
-
-        Returns:
-            Đối tượng `SessionReport` chứa toàn bộ số liệu thống kê.
-        """
+        """Thực thi luồng xử lý tương ứng với loại nguồn đầu vào."""
         report = SessionReport(source)
         if isinstance(source, str) and Path(source).suffix.lower() in IMAGE_SUFFIXES:
             self._run_image(Path(source), report)
@@ -78,17 +87,7 @@ class PPEPipeline:
         return report
 
     def _save_snapshot(self, frame: np.ndarray, track: Track, kind: str, frame_id: int) -> str:
-        """Cắt và lưu ảnh snapshot của cá nhân vi phạm làm bằng chứng.
-
-        Args:
-            frame: Frame ảnh gốc.
-            track: Vết theo dõi của cá nhân vi phạm.
-            kind: Loại vi phạm ('helmet' hoặc 'vest').
-            frame_id: Số khung hình phát hiện.
-
-        Returns:
-            Chuỗi đường dẫn tới file ảnh snapshot đã lưu.
-        """
+        """Cắt và lưu ảnh snapshot của cá nhân vi phạm làm bằng chứng."""
         if not (self.config.save_output and self.config.save_snapshots):
             return ""
 
@@ -104,7 +103,6 @@ class PPEPipeline:
         if roi.size == 0:
             roi = frame.copy()
 
-        # Thêm thông tin văn bản vi phạm vào snapshot
         cv2.putText(
             roi,
             f"ID:{track.track_id} {kind.upper()} VIOLATION",
@@ -120,57 +118,91 @@ class PPEPipeline:
         cv2.imwrite(str(filepath), roi)
         return str(filepath)
 
-    def _confirm_violations(
+    def _process_track_first_frame(
         self,
         frame: np.ndarray,
-        tracks: list[Track],
-        report: SessionReport,
         frame_id: int,
         source_fps: float,
-    ) -> None:
-        """Xác nhận vi phạm qua nhiều khung hình liên tiếp để giảm báo động giả.
+        report: SessionReport,
+    ) -> list[Track]:
+        """Quy trình Track-First: Phát hiện người → Cập nhật Track → Cắt ROI theo Track → Nhận diện PPE."""
+        height, width = frame.shape[:2]
+        person_detections_raw = self.detector.detect_persons(frame)
 
-        Args:
-            frame: Frame ảnh hiện tại.
-            tracks: Danh sách các track vừa được cập nhật.
-            report: Báo cáo phiên làm việc.
-            frame_id: Thứ tự frame.
-            source_fps: FPS nguồn.
-        """
-        should_alert = False
+        person_dets: list[PersonDetection] = []
+        for box, conf in person_detections_raw:
+            person_dets.append(PersonDetection(box=box, confidence=conf))
+
+        # Bước 1 & 2: Cập nhật vị trí vết theo dõi
+        tracks = self.tracker.update(person_dets)
+
+        # Bước 3 & 4: Trích xuất ROI người từ vết theo dõi và nhận diện PPE
+        pad = self.config.person_roi_padding
         for track in tracks:
             report.unique_track_ids.add(track.track_id)
             if not track.updated:
                 continue
 
-            for kind, violated in (
+            x1, y1, x2, y2 = map(int, track.box)
+            cx1 = max(0, x1 - pad)
+            cy1 = max(0, y1 - pad)
+            cx2 = min(width, x2 + pad)
+            cy2 = min(height, y2 + pad)
+
+            roi = frame[cy1:cy2, cx1:cx2]
+            ppe_status = self.detector.analyze_ppe_for_roi(roi)
+            track.ppe = ppe_status
+
+        # Bước 5: Đưa vào máy trạng thái Temporal Violation FSM
+        timestamp_sec = round((frame_id - 1) / source_fps, 3) if source_fps > 0 else 0.0
+        self._evaluate_fsm(frame, tracks, report, frame_id, timestamp_sec)
+
+        return tracks
+
+    def _evaluate_fsm(
+        self,
+        frame: np.ndarray,
+        tracks: list[Track],
+        report: SessionReport,
+        frame_id: int,
+        timestamp_sec: float,
+    ) -> None:
+        """Đánh giá chuyển trạng thái máy hữu hạn FSM cho các track."""
+        should_alert = False
+
+        for track in tracks:
+            if not track.updated:
+                continue
+
+            for kind, is_violated in (
                 ("helmet", track.ppe.helmet_violation),
                 ("vest", track.ppe.vest_violation),
             ):
-                key = (track.track_id, kind)
-                if violated:
-                    self.confirmation_streaks[key] = self.confirmation_streaks.get(key, 0) + 1
-                else:
-                    self.confirmation_streaks[key] = 0
+                transition = self.fsm.update(
+                    track_id=track.track_id,
+                    violation_type=kind,
+                    is_violated=is_violated,
+                    frame_id=frame_id,
+                    timestamp_sec=timestamp_sec,
+                )
 
-                is_confirmed = self.confirmation_streaks[key] >= self.config.violation_confirmations
-
-                if is_confirmed and key not in self.confirmed_violations:
-                    self.confirmed_violations.add(key)
+                if transition.should_emit_alert:
                     snapshot_path = self._save_snapshot(frame, track, kind, frame_id)
                     report.add_event(
                         track_id=track.track_id,
                         kind=kind,
                         frame_id=frame_id,
-                        fps=source_fps,
+                        fps=(frame_id / timestamp_sec) if timestamp_sec > 0 else 0.0,
                         snapshot_path=snapshot_path,
                     )
-
+                    log_label = "TÁI PHẠM" if transition.is_recurrence else "XÁC NHẬN VI PHẠM"
                     LOGGER.warning(
-                        "XÁC NHẬN VI PHẠM [%s] - Người ID: %d (Frame %d)",
+                        "%s [%s] - Người ID: %d (Frame %d, %.2fs)",
+                        log_label,
                         kind.upper(),
                         track.track_id,
                         frame_id,
+                        timestamp_sec,
                     )
                     should_alert = True
 
@@ -183,8 +215,10 @@ class PPEPipeline:
         if frame is None:
             raise ValueError(f"Không thể đọc file ảnh: {source}")
 
-        tracks = self.tracker.update(self.detector.detect(frame))
         report.total_frames = 1
+        # Với ảnh đơn, phát hiện trực tiếp
+        detections = self.detector.detect(frame)
+        tracks = self.tracker.update(detections)
 
         for track in tracks:
             report.unique_track_ids.add(track.track_id)
@@ -226,7 +260,7 @@ class PPEPipeline:
             self._show_image(annotated)
 
     def _run_stream(self, source: int | str, report: SessionReport) -> None:
-        """Xử lý nguồn dữ liệu luồng (Video file hoặc Webcam)."""
+        """Xử lý nguồn dữ liệu luồng (Video file hoặc Webcam) với Track-First và Motion Prediction."""
         capture = cv2.VideoCapture(source)
         if not capture.isOpened():
             capture.release()
@@ -248,14 +282,13 @@ class PPEPipeline:
                 report.total_frames += 1
                 frame_id = report.total_frames
 
-                # Chạy detection định kỳ theo interval để tối ưu FPS
+                # Chu kỳ chạy detector
                 is_detection_frame = frame_id == 1 or frame_id % self.config.detection_interval == 0
                 if is_detection_frame:
-                    detections = self.detector.detect(frame)
-                    tracks = self.tracker.update(detections)
-                    self._confirm_violations(frame, tracks, report, frame_id, source_fps)
+                    tracks = self._process_track_first_frame(frame, frame_id, source_fps, report)
                 else:
-                    tracks = self.tracker.active_tracks()
+                    # Frame trung gian: Dự đoán vị trí chuyển động (Motion Prediction) chống freeze box
+                    tracks = self.tracker.predict()
 
                 now = time.perf_counter()
                 curr_fps = 1.0 / max(now - prev_time, 1e-6)
@@ -280,7 +313,6 @@ class PPEPipeline:
 
                 if self.config.show_window:
                     cv2.imshow("Hệ thống Giám sát PPE - OpenCV", annotated)
-                    # Nhấn phím 'ESC' để dừng
                     if cv2.waitKey(1) & 0xFF == 27:
                         LOGGER.info("Dừng chương trình theo lệnh người dùng (ESC).")
                         break

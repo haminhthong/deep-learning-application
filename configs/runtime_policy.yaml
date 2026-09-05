@@ -1,0 +1,33 @@
+# Inference Contract & Decision Policy
+# Specifies detection thresholds, tracking parameters, spatial body-zone boundaries, and temporal confirmation FSM rules.
+
+inference_contract:
+  person_confidence: 0.30
+  ppe_confidence: 0.30
+  nms_iou: 0.50
+  image_size: 640
+  person_roi_padding_px: 10
+
+tracking_policy:
+  tracker_type: "bytetrack"              # 'bytetrack' or 'iou'
+  high_threshold: 0.50                   # High detection threshold for stage-1 matching
+  match_threshold: 0.70                  # IoU match threshold for tracking
+  max_missed_detections: 30              # Max missed detector observation cycles before track deletion
+  track_ttl_seconds: 5.0                 # Alternative time-based track lifetime
+
+spatial_association_policy:
+  enable_body_zone_filter: true
+  head_zone:
+    y_min_ratio: 0.00
+    y_max_ratio: 0.35                    # Helmet / no-helmet must overlap upper 35% of person ROI
+  torso_zone:
+    y_min_ratio: 0.30
+    y_max_ratio: 0.75                    # Vest / no-vest must overlap 30%-75% of person ROI
+
+decision_policy:
+  conflict_margin: 0.10                  # Confidence difference needed to resolve conflicting labels
+  violation_confirmations: 3             # Consecutive detection observations required to emit alert
+  resolution_confirmations: 3            # Consecutive compliant observations required to resolve alert
+  alert_cooldown_seconds: 10.0           # Cooldown before recurring alerts for same track
+  roi_rule: "center_or_overlap"          # 'center' or 'overlap'
+  roi_overlap_threshold: 0.40
